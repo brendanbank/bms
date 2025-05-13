@@ -1,0 +1,14 @@
+[Unit]
+Description=JBD BMS Monitor
+After=network.target
+
+[Service]
+Restart=always
+WorkingDirectory=/usr/local/bms
+Environment="PYTHONUNBUFFERED=1"
+Environment="PATH=/usr/local/bms/venv/bin:$PATH"
+ExecStart=/usr/local/bms/jbdbms-16-json.py
+
+[Install]
+WantedBy=multi-user.target
+
