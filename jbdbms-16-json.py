@@ -672,12 +672,16 @@ if __name__ == "__main__":
     # Let's try the pattern-based one first
     cmd_bytes = b'\xdd\xa5\x05\x00\xff\xfb\x77'
     print(f'  Sending command: {binascii.hexlify(cmd_bytes).decode()}')
+    
+    # Request hardware version - the response may come immediately or with a slight delay
     try:
         result = bms.writeCharacteristic(0x15, cmd_bytes, False)
-        print('  Command sent, waiting for response...')
-        bms.waitForNotifications(5)  # Wait up to 5 seconds for response
-        time.sleep(0.5)  # Give it a moment to process
-        print('  Response wait completed')
+        print('  Command sent, waiting for response (up to 10 seconds)...')
+        # Wait multiple times to catch the response (it may come in separate notifications)
+        for i in range(5):
+            bms.waitForNotifications(2)  # Wait up to 2 seconds per cycle
+        time.sleep(0.5)  # Final brief pause
+        print('  Response wait completed. If hardware version received, you should see "dd05" in logs above.')
     except Exception as ex:
         print(f'  Error requesting hardware version: {ex}')
         import traceback
