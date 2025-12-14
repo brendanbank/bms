@@ -508,10 +508,9 @@ class MyDelegate(DefaultDelegate):
             self.hw_version_received = True
         # Check for hardware version response in dd04 format (before other dd04 messages)
         elif text_string.startswith('dd04') and len(data) >= 5:
-        # Hardware version responses: dd 04 [status] [length] [version...] [checksum] 77
-        # They're typically short messages with a length byte at position 3
-        # Try to identify by checking if it has the structure of a version response
-        if text_string.startswith('dd04') and len(data) >= 5:
+            # Hardware version responses: dd 04 [status] [length] [version...] [checksum] 77
+            # They're typically short messages with a length byte at position 3
+            # Try to identify by checking if it has the structure of a version response
             status = data[2]
             length = data[3] if len(data) > 3 else 0
             
