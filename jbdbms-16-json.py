@@ -31,6 +31,7 @@ metrics = {
         'cellmin': Gauge('battery_cellmin', 'battery_cellmin',  labelnames=['meter'], registry=registry),
         'cellmax': Gauge('battery_cellmax', 'battery_cellmax',  labelnames=['meter'], registry=registry),
         'delta': Gauge('battery_delta', 'battery_delta',  labelnames=['meter'], registry=registry),
+        'hwversion': Info('battery_hwversion', 'BMS hardware version information', labelnames=['meter'], registry=registry),
 }
 
 def disconnect():
@@ -220,6 +221,60 @@ def cellinfo3(data):
         print(f"cellinfo3 decode error: {e}")
         pass
 
+def hwversion(data):
+    """
+    Process hardware version response (command 0x05).
+    
+    Decodes the hardware version string returned by the BMS.
+    The version is an ASCII string that can be up to 31 characters long.
+    
+    Args:
+        data (bytes): Raw BLE notification data from command 0x05
+                     Format: [dd][04][status][length][version_string...][checksum][77]
+                     - dd: Start byte
+                     - 04: Response type
+                     - status: 0x00 = success
+                     - length: Length of version string
+                     - version_string: ASCII characters
+                     - checksum: Data validation
+                     - 77: End marker
+    
+    The hardware version is typically read once at startup and doesn't change,
+    so it's exported as a Prometheus Info metric (key-value labels).
+    """
+    if len(data) < 5:
+        print(f"hwversion: data too short ({len(data)} bytes)")
+        return
+    
+    try:
+        # Response format: dd 04 [status] [length] [version_string...] [checksum] 77
+        # Skip first 2 bytes (dd 04), then status byte, then length byte
+        status = data[2]
+        length = data[3]
+        
+        if status != 0x00:
+            print(f"hwversion: error status {status:02x}")
+            return
+        
+        # Extract version string (skip header: dd 04 status length = 4 bytes)
+        # Version string ends before checksum and 77 marker
+        if length > 0 and len(data) >= 4 + length:
+            version_bytes = data[4:4+length]
+            version_string = version_bytes.decode('ascii', errors='replace').strip()
+            
+            print(f"Hardware version: {version_string}")
+            
+            # Update Prometheus Info metric
+            # Info metrics store key-value pairs as labels
+            metrics['hwversion'].labels(meter).info({'version': version_string})
+        else:
+            print(f"hwversion: invalid length {length} or data too short")
+            
+    except Exception as e:
+        print(f"hwversion decode error: {e}")
+        import traceback
+        traceback.print_exc()
+
 def cellvolts1(data):
     """
     Process cell voltages for cells 1-8 (command 0x04, first part).
@@ -339,6 +394,7 @@ class MyDelegate(DefaultDelegate):
     Message types:
         - dd03: Pack information (voltage, current, capacity, balancing status)
         - dd04: Cell voltages (16 cells, split across multiple notifications)
+        - dd04 (with length byte): Hardware version response (command 0x05 response)
         - Extended messages: Longer messages that span multiple BLE packets
     
     Message format:
@@ -422,7 +478,25 @@ class MyDelegate(DefaultDelegate):
         #   3. End marker presence ('77')
         print(f'Routing message: starts with {text_string[:4]}, length {len(text_string)}, ends with {text_string[-4:]}')
         
-        if text_string.find('dd04') != -1 and len(text_string) == 78:
+        # Check for hardware version response first (before other dd04 messages)
+        # Hardware version responses: dd 04 [status] [length] [version...] [checksum] 77
+        # They're short messages (< 50 hex chars) with a length byte at position 3
+        if (text_string.startswith('dd04') and len(data) >= 5 and 
+            len(text_string) < 50 and len(text_string) != 40 and len(text_string) != 78):
+            status = data[2]
+            length = data[3]
+            # Hardware version responses have status 0x00 and reasonable length
+            if status == 0x00 and 0 < length < 32:
+                print(f'Processing hardware version response ({len(text_string)} chars)')
+                hwversion(data)
+            else:
+                # Doesn't match hardware version pattern, treat as cell voltage
+                if len(text_string) == 78:
+                    cellvolts1(data[:20])
+                    cellvolts2(data[20:])
+                else:
+                    cellvolts1(data)
+        elif text_string.find('dd04') != -1 and len(text_string) == 78:
             # Extended cell voltage message: 39 bytes total (78 hex chars)
             # This is a complete message containing all 16 cells in one notification
             # Format: [20 bytes cellvolts1 data][19 bytes cellvolts2 data]
@@ -513,6 +587,7 @@ if __name__ == "__main__":
         - 0x15: Characteristic handle for sending commands
         - dd a5 04 00 ff fc 77: Request cell voltages (0x04)
         - dd a5 03 00 ff fd 77: Request pack info (0x03)
+        - dd a5 05 00 ff fb 77: Request hardware version (0x05, requested once at startup)
         - waitForNotifications(5): Wait up to 5 seconds for response
           (Using 5 seconds prevents missed notifications with shorter timeouts)
     """
@@ -525,6 +600,16 @@ if __name__ == "__main__":
     # Metrics will be available at http://localhost:9658/metrics
     start_http_server(port, registry=registry)
     print(f'Prometheus metrics server started on port {port}')
+
+    # Request hardware version once at startup
+    # Command format: dd a5 [command] 00 [checksum] 77
+    # For 0x05: dd + a5 + 05 + 00 = 0x01a7, checksum = 0xff 0xfb
+    print('Requesting hardware version...')
+    try:
+        result = bms.writeCharacteristic(0x15, b'\xdd\xa5\x05\x00\xff\xfb\x77', False)
+        bms.waitForNotifications(5)  # Wait up to 5 seconds for response
+    except Exception as ex:
+        print(f'Error requesting hardware version: {ex}')
 
     # Main monitoring loop
     while True:
