@@ -561,6 +561,9 @@ class MyDelegate(DefaultDelegate):
             # Pack info part 2: Extended info (18 bytes = 36 hex chars)
             # This is the continuation of a split dd03 message
             cellinfo2(data)
+        else:
+            # Unknown message format - print for debugging
+            print(f'unhandled message: len={len(text_string)}, hex={text_string}, data={binascii.hexlify(data).decode()}')
 
 def clear_protection_errors(bms):
     """
