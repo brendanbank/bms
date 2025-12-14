@@ -230,45 +230,66 @@ def hwversion(data):
     
     Args:
         data (bytes): Raw BLE notification data from command 0x05
-                     Format: [dd][04][status][length][version_string...][checksum][77]
+                     Format: [dd][05][status][length][version_string...][checksum][77]
                      - dd: Start byte
-                     - 04: Response type
+                     - 05: Response type (some BMS may use 04)
                      - status: 0x00 = success
                      - length: Length of version string
                      - version_string: ASCII characters
-                     - checksum: Data validation
+                     - checksum: Data validation (2 bytes)
                      - 77: End marker
     
     The hardware version is typically read once at startup and doesn't change,
     so it's exported as a Prometheus Info metric (key-value labels).
     """
+    print(f"hwversion: Processing data ({len(data)} bytes): {binascii.hexlify(data).decode()}")
+    
     if len(data) < 5:
         print(f"hwversion: data too short ({len(data)} bytes)")
         return
     
     try:
-        # Response format: dd 04 [status] [length] [version_string...] [checksum] 77
-        # Skip first 2 bytes (dd 04), then status byte, then length byte
+        # Response format: dd 05 [status] [length] [version_string...] [checksum] 77
+        # Or possibly: dd 04 [status] [length] [version_string...] [checksum] 77
+        # Skip first 2 bytes (dd 05 or dd 04), then status byte, then length byte
+        response_type = data[1]  # Should be 0x05 or 0x04
         status = data[2]
         length = data[3]
+        
+        print(f"hwversion: response_type={response_type:02x}, status={status:02x}, length={length}, data_len={len(data)}")
         
         if status != 0x00:
             print(f"hwversion: error status {status:02x}")
             return
         
-        # Extract version string (skip header: dd 04 status length = 4 bytes)
-        # Version string ends before checksum and 77 marker
-        if length > 0 and len(data) >= 4 + length:
+        # Extract version string (skip header: dd 05/04 status length = 4 bytes)
+        # Version string ends before checksum (2 bytes) and 77 marker (1 byte)
+        # Need at least: 4 header bytes + length bytes + 2 checksum bytes + 1 end marker
+        min_required = 4 + length + 3
+        if length > 0 and len(data) >= min_required:
             version_bytes = data[4:4+length]
             version_string = version_bytes.decode('ascii', errors='replace').strip()
             
-            print(f"Hardware version: {version_string}")
+            print(f"hwversion: SUCCESS - Hardware version: '{version_string}'")
             
             # Update Prometheus Info metric
             # Info metrics store key-value pairs as labels
             metrics['hwversion'].labels(meter).info({'version': version_string})
+            print(f"hwversion: Metric updated for meter '{meter}'")
         else:
-            print(f"hwversion: invalid length {length} or data too short")
+            print(f"hwversion: invalid - length={length}, data_len={len(data)}, min_required={min_required}")
+            # Try to extract anyway if we have at least some data
+            if len(data) > 4:
+                try:
+                    # Try extracting up to available length (leave room for 2-byte checksum and 77)
+                    extract_len = min(length, len(data) - 4 - 3)  # Leave room for checksum (2 bytes) and 77 (1 byte)
+                    if extract_len > 0:
+                        version_bytes = data[4:4+extract_len]
+                        version_string = version_bytes.decode('ascii', errors='replace').strip()
+                        print(f"hwversion: Partial extraction: '{version_string}'")
+                        metrics['hwversion'].labels(meter).info({'version': version_string})
+                except Exception as e2:
+                    print(f"hwversion: Failed partial extraction: {e2}")
             
     except Exception as e:
         print(f"hwversion decode error: {e}")
@@ -394,7 +415,7 @@ class MyDelegate(DefaultDelegate):
     Message types:
         - dd03: Pack information (voltage, current, capacity, balancing status)
         - dd04: Cell voltages (16 cells, split across multiple notifications)
-        - dd04 (with length byte): Hardware version response (command 0x05 response)
+        - dd05: Hardware version response (command 0x05 response)
         - Extended messages: Longer messages that span multiple BLE packets
     
     Message format:
@@ -407,6 +428,7 @@ class MyDelegate(DefaultDelegate):
         """Initialize the delegate with an empty message buffer."""
         DefaultDelegate.__init__(self)
         self.message_buffer = b''  # Buffer for reassembling multi-part BLE messages
+        self.hw_version_received = False  # Track if hardware version has been received
 
     def handleNotification(self, cHandle, data):
         """
@@ -473,28 +495,63 @@ class MyDelegate(DefaultDelegate):
 
         # Route complete messages to appropriate decoding routines
         # Message identification is based on:
-        #   1. Message prefix (dd03 = pack info, dd04 = cell voltages)
+        #   1. Message prefix (dd03 = pack info, dd04 = cell voltages, dd05 = hardware version)
         #   2. Message length (hex string length = 2 * byte length)
         #   3. End marker presence ('77')
         print(f'Routing message: starts with {text_string[:4]}, length {len(text_string)}, ends with {text_string[-4:]}')
         
-        # Check for hardware version response first (before other dd04 messages)
+        # Check for hardware version response (command 0x05 response starts with dd05)
+        if text_string.startswith('dd05') and len(data) >= 5:
+            # Hardware version response format: dd 05 [status] [length] [version_string...] [checksum] 77
+            print(f'  -> Processing as hardware version response (dd05, {len(text_string)} chars)')
+            hwversion(data)
+            self.hw_version_received = True
+        # Check for hardware version response in dd04 format (before other dd04 messages)
+        elif text_string.startswith('dd04') and len(data) >= 5:
         # Hardware version responses: dd 04 [status] [length] [version...] [checksum] 77
-        # They're short messages (< 50 hex chars) with a length byte at position 3
-        if (text_string.startswith('dd04') and len(data) >= 5 and 
-            len(text_string) < 50 and len(text_string) != 40 and len(text_string) != 78):
+        # They're typically short messages with a length byte at position 3
+        # Try to identify by checking if it has the structure of a version response
+        if text_string.startswith('dd04') and len(data) >= 5:
             status = data[2]
-            length = data[3]
-            # Hardware version responses have status 0x00 and reasonable length
-            if status == 0x00 and 0 < length < 32:
-                print(f'Processing hardware version response ({len(text_string)} chars)')
+            length = data[3] if len(data) > 3 else 0
+            
+            print(f'  dd04 message: len={len(text_string)}, status={status:02x}, length_byte={length}, data[4:8]={binascii.hexlify(data[4:min(8,len(data))]).decode() if len(data) > 4 else "N/A"}')
+            
+            # Hardware version responses have:
+            # - status 0x00 (success)
+            # - length byte < 32 (reasonable version string length)
+            # - Different structure than cell voltage messages
+            # Cell voltage messages typically have data starting at byte 4, not a length byte
+            is_likely_hwversion = (
+                status == 0x00 and 
+                0 < length < 32 and 
+                len(data) >= 4 + length + 2 and  # Has room for version + checksum + 77
+                len(text_string) != 40 and  # Not standard cell voltage part 1
+                len(text_string) != 78      # Not extended cell voltage
+            )
+            
+            if is_likely_hwversion:
+                print(f'  -> Processing as hardware version response ({len(text_string)} chars, length={length})')
                 hwversion(data)
+                self.hw_version_received = True
+            elif len(text_string) == 78:
+                # Extended cell voltage message
+                print(f'  -> Processing as extended cell voltage')
+                cellvolts1(data[:20])
+                cellvolts2(data[20:])
+            elif len(text_string) == 40:
+                # Standard cell voltage part 1
+                print(f'  -> Processing as standard cell voltage part 1')
+                cellvolts1(data)
             else:
-                # Doesn't match hardware version pattern, treat as cell voltage
-                if len(text_string) == 78:
-                    cellvolts1(data[:20])
-                    cellvolts2(data[20:])
+                # Unknown dd04 message - try as hardware version if it looks right
+                if status == 0x00 and 0 < length < 32:
+                    print(f'  -> Attempting to process as hardware version (unknown format, {len(text_string)} chars)')
+                    hwversion(data)
+                    self.hw_version_received = True
                 else:
+                    # Fall back to cell voltage processing
+                    print(f'  -> Unknown dd04 format, attempting cell voltage processing')
                     cellvolts1(data)
         elif text_string.find('dd04') != -1 and len(text_string) == 78:
             # Extended cell voltage message: 39 bytes total (78 hex chars)
@@ -603,13 +660,29 @@ if __name__ == "__main__":
 
     # Request hardware version once at startup
     # Command format: dd a5 [command] 00 [checksum] 77
-    # For 0x05: dd + a5 + 05 + 00 = 0x01a7, checksum = 0xff 0xfb
+    # Checksum pattern analysis:
+    #   0x04: dd a5 04 00 = 0x01a6, checksum = ff fc
+    #   0x03: dd a5 03 00 = 0x01a5, checksum = ff fd
+    #   0x05: dd a5 05 00 = 0x01a7, checksum = ff fb (following pattern)
+    # The pattern suggests: checksum = 0xff (0x100 - (sum & 0xff) - 1)
     print('Requesting hardware version...')
+    
+    # Calculate checksum: sum bytes dd + a5 + 05 + 00 = 0x01a7
+    # Low byte = 0xa7, so checksum second byte = 0x100 - 0xa7 - 1 = 0x58
+    # But pattern shows: 0x04 -> 0xfc, 0x03 -> 0xfd, so 0x05 -> 0xfb
+    # Let's try the pattern-based one first
+    cmd_bytes = b'\xdd\xa5\x05\x00\xff\xfb\x77'
+    print(f'  Sending command: {binascii.hexlify(cmd_bytes).decode()}')
     try:
-        result = bms.writeCharacteristic(0x15, b'\xdd\xa5\x05\x00\xff\xfb\x77', False)
+        result = bms.writeCharacteristic(0x15, cmd_bytes, False)
+        print('  Command sent, waiting for response...')
         bms.waitForNotifications(5)  # Wait up to 5 seconds for response
+        time.sleep(0.5)  # Give it a moment to process
+        print('  Response wait completed')
     except Exception as ex:
-        print(f'Error requesting hardware version: {ex}')
+        print(f'  Error requesting hardware version: {ex}')
+        import traceback
+        traceback.print_exc()
 
     # Main monitoring loop
     while True:
