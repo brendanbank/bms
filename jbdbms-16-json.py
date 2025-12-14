@@ -146,7 +146,6 @@ def cellinfo2(data):
     ]:
         metrics['cell'].labels(meter, 'protect', prot_name).set(int(prt[prot_bit:prot_bit+1]))
 
-    print ("message2: " + json.dumps(message2))
 
 def cellinfo3(data):
     """
@@ -174,8 +173,6 @@ def cellinfo3(data):
     if len(data) < 14:
         return
 
-    print(f"cellinfo3 raw data: {binascii.hexlify(data).decode('utf-8')}")
-
     try:
         # Extract protection status (bytes 2-3)
         protect = struct.unpack_from('>H', data, 2)[0]
@@ -186,8 +183,6 @@ def cellinfo3(data):
 
         # Decode protection bits (same format as cellinfo2)
         prt = (format(protect, "b").zfill(16))
-
-        print(f"Protection: {protect} (0x{protect:04x}), Cells: {cells}, Sensors: {sensors}")
 
         # Process temperatures if we have at least 3 sensors
         if sensors >= 3:
@@ -206,8 +201,6 @@ def cellinfo3(data):
                 metrics['cell'].labels(meter, 'temp', 'temp2').set(temp2_c)
                 metrics['cell'].labels(meter, 'temp', 'temp3').set(temp3_c)
 
-                print(f"Temperatures: {temp1_c:.1f}°C, {temp2_c:.1f}°C, {temp3_c:.1f}°C")
-
                 # Update protection status metrics (same format as cellinfo2)
                 for prot_name, prot_bit in [
                     ('ovp', 0), ('uvp', 1), ('bov', 2), ('buv', 3),
@@ -215,10 +208,7 @@ def cellinfo3(data):
                     ('coc', 8), ('duc', 9), ('sc', 10), ('ic', 11), ('cnf', 12)
                 ]:
                     metrics['cell'].labels(meter, 'protect', prot_name).set(int(prt[prot_bit:prot_bit+1]))
-            else:
-                print(f"Temperature values out of range: {temp1}, {temp2}, {temp3}")
-    except Exception as e:
-        print(f"cellinfo3 decode error: {e}")
+    except Exception:
         pass
 
 def hwversion(data):
@@ -242,24 +232,17 @@ def hwversion(data):
     The hardware version is typically read once at startup and doesn't change,
     so it's exported as a Prometheus Info metric (key-value labels).
     """
-    print(f"hwversion: Processing data ({len(data)} bytes): {binascii.hexlify(data).decode()}")
-    
     if len(data) < 5:
-        print(f"hwversion: data too short ({len(data)} bytes)")
         return
     
     try:
         # Response format: dd 05 [status] [length] [version_string...] [checksum] 77
         # Or possibly: dd 04 [status] [length] [version_string...] [checksum] 77
         # Skip first 2 bytes (dd 05 or dd 04), then status byte, then length byte
-        response_type = data[1]  # Should be 0x05 or 0x04
         status = data[2]
         length = data[3]
         
-        print(f"hwversion: response_type={response_type:02x}, status={status:02x}, length={length}, data_len={len(data)}")
-        
         if status != 0x00:
-            print(f"hwversion: error status {status:02x}")
             return
         
         # Extract version string (skip header: dd 05/04 status length = 4 bytes)
@@ -270,31 +253,23 @@ def hwversion(data):
             version_bytes = data[4:4+length]
             version_string = version_bytes.decode('ascii', errors='replace').strip()
             
-            print(f"hwversion: SUCCESS - Hardware version: '{version_string}'")
-            
             # Update Prometheus Info metric
-            # Info metrics store key-value pairs as labels
             metrics['hwversion'].labels(meter).info({'version': version_string})
-            print(f"hwversion: Metric updated for meter '{meter}'")
         else:
-            print(f"hwversion: invalid - length={length}, data_len={len(data)}, min_required={min_required}")
             # Try to extract anyway if we have at least some data
             if len(data) > 4:
                 try:
                     # Try extracting up to available length (leave room for 2-byte checksum and 77)
-                    extract_len = min(length, len(data) - 4 - 3)  # Leave room for checksum (2 bytes) and 77 (1 byte)
+                    extract_len = min(length, len(data) - 4 - 3)
                     if extract_len > 0:
                         version_bytes = data[4:4+extract_len]
                         version_string = version_bytes.decode('ascii', errors='replace').strip()
-                        print(f"hwversion: Partial extraction: '{version_string}'")
                         metrics['hwversion'].labels(meter).info({'version': version_string})
-                except Exception as e2:
-                    print(f"hwversion: Failed partial extraction: {e2}")
+                except Exception:
+                    pass
             
-    except Exception as e:
-        print(f"hwversion decode error: {e}")
-        import traceback
-        traceback.print_exc()
+    except Exception:
+        pass
 
 def cellvolts1(data):
     """
@@ -453,7 +428,6 @@ class MyDelegate(DefaultDelegate):
         """
         # Convert binary data to hex string for pattern matching
         hex_data = binascii.hexlify(data)
-        print(hex_data)
         text_string = hex_data.decode('utf-8')
 
         # Handle multi-part BLE messages
@@ -468,18 +442,14 @@ class MyDelegate(DefaultDelegate):
                 pass  # Fall through to routing logic below
             else:
                 # Incomplete message, wait for continuation packets
-                print(f'buffering message, waiting for continuation (buffer len: {len(self.message_buffer)} bytes)')
                 return
         elif len(self.message_buffer) > 0:
             # We're already buffering a multi-part message - append this continuation packet
-            print(f'appending to buffer (current buffer: {len(self.message_buffer)} bytes, adding: {len(data)} bytes)')
             self.message_buffer += data
             if not text_string.endswith('77'):
                 # Still waiting for more packets (message not complete yet)
-                print(f'still buffering (total buffer: {len(self.message_buffer)} bytes)')
                 return
             # Message complete (ends with '77'), process the full reassembled message
-            print(f'message complete! total size: {len(self.message_buffer)} bytes')
             data = self.message_buffer
             hex_data = binascii.hexlify(data)
             text_string = hex_data.decode('utf-8')
@@ -489,8 +459,6 @@ class MyDelegate(DefaultDelegate):
             if text_string == '00':
                 # Single null byte - connection acknowledgment from BMS, ignore
                 return
-            print(f'unexpected packet (no active buffer): {text_string}')
-            print(f'buffer length: {len(self.message_buffer)}')
             return
 
         # Route complete messages to appropriate decoding routines
@@ -498,12 +466,10 @@ class MyDelegate(DefaultDelegate):
         #   1. Message prefix (dd03 = pack info, dd04 = cell voltages, dd05 = hardware version)
         #   2. Message length (hex string length = 2 * byte length)
         #   3. End marker presence ('77')
-        print(f'Routing message: starts with {text_string[:4]}, length {len(text_string)}, ends with {text_string[-4:]}')
         
         # Check for hardware version response (command 0x05 response starts with dd05)
         if text_string.startswith('dd05') and len(data) >= 5:
             # Hardware version response format: dd 05 [status] [length] [version_string...] [checksum] 77
-            print(f'  -> Processing as hardware version response (dd05, {len(text_string)} chars)')
             hwversion(data)
             self.hw_version_received = True
         # Check for hardware version response in dd04 format (before other dd04 messages)
@@ -513,8 +479,6 @@ class MyDelegate(DefaultDelegate):
             # Try to identify by checking if it has the structure of a version response
             status = data[2]
             length = data[3] if len(data) > 3 else 0
-            
-            print(f'  dd04 message: len={len(text_string)}, status={status:02x}, length_byte={length}, data[4:8]={binascii.hexlify(data[4:min(8,len(data))]).decode() if len(data) > 4 else "N/A"}')
             
             # Hardware version responses have:
             # - status 0x00 (success)
@@ -530,40 +494,33 @@ class MyDelegate(DefaultDelegate):
             )
             
             if is_likely_hwversion:
-                print(f'  -> Processing as hardware version response ({len(text_string)} chars, length={length})')
                 hwversion(data)
                 self.hw_version_received = True
             elif len(text_string) == 78:
                 # Extended cell voltage message
-                print(f'  -> Processing as extended cell voltage')
                 cellvolts1(data[:20])
                 cellvolts2(data[20:])
             elif len(text_string) == 40:
                 # Standard cell voltage part 1
-                print(f'  -> Processing as standard cell voltage part 1')
                 cellvolts1(data)
             else:
                 # Unknown dd04 message - try as hardware version if it looks right
                 if status == 0x00 and 0 < length < 32:
-                    print(f'  -> Attempting to process as hardware version (unknown format, {len(text_string)} chars)')
                     hwversion(data)
                     self.hw_version_received = True
                 else:
                     # Fall back to cell voltage processing
-                    print(f'  -> Unknown dd04 format, attempting cell voltage processing')
                     cellvolts1(data)
         elif text_string.find('dd04') != -1 and len(text_string) == 78:
             # Extended cell voltage message: 39 bytes total (78 hex chars)
             # This is a complete message containing all 16 cells in one notification
             # Format: [20 bytes cellvolts1 data][19 bytes cellvolts2 data]
-            print(f'Processing extended dd04 message ({len(text_string)} chars)')
             cellvolts1(data[:20])   # First 20 bytes: cells 1-8
             cellvolts2(data[20:])   # Remaining 19 bytes: cells 9-16 + end marker
         elif text_string.find('dd03') != -1 and len(text_string) == 90:
             # Extended pack info message: 45 bytes total (90 hex chars)
             # This is a complete message with extended sensor data
             # Format: [20 bytes cellinfo1 data][20 bytes cellinfo3 data][5 bytes footer/checksum]
-            print(f'Processing extended dd03 message ({len(text_string)} chars)')
             cellinfo1(data[:20])    # First 20 bytes: standard pack info (volts, amps, capacity, balance)
             cellinfo3(data[20:40])  # Next 20 bytes: extended sensor data (temps, protection)
             # The last 5 bytes (0000fae177) appear to be a checksum or footer
@@ -584,10 +541,6 @@ class MyDelegate(DefaultDelegate):
             # Pack info part 2: Extended info (18 bytes = 36 hex chars)
             # This is the continuation of a split dd03 message
             cellinfo2(data)
-        else:
-            # Unknown message format - log for debugging
-            print(f'unhandled complete message (len={len(text_string)}): {text_string}')
-            print(f'unhandled complete message: {data}')
 
 def connect():
     """
@@ -664,28 +617,15 @@ if __name__ == "__main__":
     #   0x03: dd a5 03 00 = 0x01a5, checksum = ff fd
     #   0x05: dd a5 05 00 = 0x01a7, checksum = ff fb (following pattern)
     # The pattern suggests: checksum = 0xff (0x100 - (sum & 0xff) - 1)
-    print('Requesting hardware version...')
-    
-    # Calculate checksum: sum bytes dd + a5 + 05 + 00 = 0x01a7
-    # Low byte = 0xa7, so checksum second byte = 0x100 - 0xa7 - 1 = 0x58
-    # But pattern shows: 0x04 -> 0xfc, 0x03 -> 0xfd, so 0x05 -> 0xfb
-    # Let's try the pattern-based one first
-    cmd_bytes = b'\xdd\xa5\x05\x00\xff\xfb\x77'
-    print(f'  Sending command: {binascii.hexlify(cmd_bytes).decode()}')
-    
-    # Request hardware version - the response may come immediately or with a slight delay
+    # Request hardware version once at startup
     try:
-        result = bms.writeCharacteristic(0x15, cmd_bytes, False)
-        print('  Command sent, waiting for response (up to 10 seconds)...')
+        result = bms.writeCharacteristic(0x15, b'\xdd\xa5\x05\x00\xff\xfb\x77', False)
         # Wait multiple times to catch the response (it may come in separate notifications)
         for i in range(5):
             bms.waitForNotifications(2)  # Wait up to 2 seconds per cycle
         time.sleep(0.5)  # Final brief pause
-        print('  Response wait completed. If hardware version received, you should see "dd05" in logs above.')
-    except Exception as ex:
-        print(f'  Error requesting hardware version: {ex}')
-        import traceback
-        traceback.print_exc()
+    except Exception:
+        pass
 
     # Main monitoring loop
     while True:
