@@ -21,16 +21,23 @@ from prometheus_client import Histogram, CollectorRegistry, start_http_server, G
 registry = CollectorRegistry()
 port = 9658
 metrics = {
-        'cell': Gauge('battery_cell', 'battery_cell',  labelnames=['meter', 'cell', 'metric'], registry=registry),
-        'volts': Gauge('battery_volt', 'battery_volt',  labelnames=['meter'], registry=registry),
-        'amps': Gauge('battery_amps', 'battery_amps',  labelnames=['meter'], registry=registry),
-        'watts': Gauge('battery_watts', 'battery_watts',  labelnames=['meter'], registry=registry),
-        'remain': Gauge('battery_remain', 'battery_remain',  labelnames=['meter'], registry=registry),
-        'capacity': Gauge('battery_capacity', 'battery_capacity',  labelnames=['meter'], registry=registry),
-        'cycles': Gauge('battery_cycles', 'battery_cycles',  labelnames=['meter'], registry=registry),
-        'cellmin': Gauge('battery_cellmin', 'battery_cellmin',  labelnames=['meter'], registry=registry),
-        'cellmax': Gauge('battery_cellmax', 'battery_cellmax',  labelnames=['meter'], registry=registry),
-        'delta': Gauge('battery_delta', 'battery_delta',  labelnames=['meter'], registry=registry),
+        'cell': Gauge('battery_cell', 
+                     'Battery cell metrics. Metric types: volts (cell voltage in mV, cell=01-16), balance (balancing status 0/1, cell=01-16), '
+                     'percent (state of charge, cell=battery), fet (FET status: 0=both off, 1=charge on, 2=discharge on, 3=both on, cell=battery), '
+                     'temp1-4 (temperature in Celsius, cell=temp). Protection statuses (cell=protect, value 0=off/1=on): '
+                     'ovp=Overvoltage Protection, uvp=Undervoltage Protection, bov=Battery Pack Overvoltage, buv=Battery Pack Undervoltage, '
+                     'cot=Charge Over Temperature, cut=Charge Under Temperature, dot=Discharge Over Temperature, dut=Discharge Under Temperature, '
+                     'coc=Charge Over Current, duc=Discharge Under Current, sc=Short Circuit, ic=IC Failure, cnf=Configuration Problem', 
+                     labelnames=['meter', 'cell', 'metric'], registry=registry),
+        'volts': Gauge('battery_volt', 'Total pack voltage in volts',  labelnames=['meter'], registry=registry),
+        'amps': Gauge('battery_amps', 'Pack current in amperes (positive=charging, negative=discharging)',  labelnames=['meter'], registry=registry),
+        'watts': Gauge('battery_watts', 'Pack power in watts (volts * amps)',  labelnames=['meter'], registry=registry),
+        'remain': Gauge('battery_remain', 'Remaining capacity in amp-hours',  labelnames=['meter'], registry=registry),
+        'capacity': Gauge('battery_capacity', 'Total pack capacity in amp-hours',  labelnames=['meter'], registry=registry),
+        'cycles': Gauge('battery_cycles', 'Number of charge/discharge cycles',  labelnames=['meter'], registry=registry),
+        'cellmin': Gauge('battery_cellmin', 'Cell number with minimum voltage',  labelnames=['meter'], registry=registry),
+        'cellmax': Gauge('battery_cellmax', 'Cell number with maximum voltage',  labelnames=['meter'], registry=registry),
+        'delta': Gauge('battery_delta', 'Voltage difference between max and min cells in millivolts',  labelnames=['meter'], registry=registry),
         'hwversion': Info('battery_hwversion', 'BMS hardware version information', labelnames=['meter'], registry=registry),
 }
 
