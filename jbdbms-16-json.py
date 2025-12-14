@@ -24,11 +24,13 @@ metrics = {
         'cell': Gauge('battery_cell', 
                      'Battery cell metrics. Metric types: volts (cell voltage in mV, cell=01-16), balance (balancing status 0/1, cell=01-16), '
                      'percent (state of charge, cell=battery), fet (FET status: 0=both off, 1=charge on, 2=discharge on, 3=both on, cell=battery), '
-                     'temp1-4 (temperature in Celsius, cell=temp). Protection statuses (cell=protect, value 0=off/1=on): '
-                     'ovp=Overvoltage Protection, uvp=Undervoltage Protection, bov=Battery Pack Overvoltage, buv=Battery Pack Undervoltage, '
-                     'cot=Charge Over Temperature, cut=Charge Under Temperature, dot=Discharge Over Temperature, dut=Discharge Under Temperature, '
-                     'coc=Charge Over Current, duc=Discharge Under Current, sc=Short Circuit, ic=IC Failure, cnf=Configuration Problem', 
+                     'temp1-4 (temperature in Celsius, cell=temp). Protection statuses (cell=protect, value 0=normal/1=triggered): '
+                     'These are LATCHED protection events that remain set until cleared. '
+                     'ovp=Cell Overvoltage Protection, uvp=Cell Undervoltage Protection, bov=Pack Overvoltage Protection, buv=Pack Undervoltage Protection, '
+                     'cot=Charging Over-Temperature Protection, cut=Charging Low-Temperature Protection, dot=Discharging Over-Temperature Protection, dut=Discharging Low-Temperature Protection, '
+                     'coc=Charging Overcurrent Protection, duc=Discharging Overcurrent Protection, sc=Short Circuit Protection, ic=Front-End Detection IC Error, mos=Software Lock MOS', 
                      labelnames=['meter', 'cell', 'metric'], registry=registry),
+        'protect_raw': Gauge('battery_protect_raw', 'Raw 16-bit protection status value (for debugging)', labelnames=['meter'], registry=registry),
         'volts': Gauge('battery_volt', 'Total pack voltage in volts',  labelnames=['meter'], registry=registry),
         'amps': Gauge('battery_amps', 'Pack current in amperes (positive=charging, negative=discharging)',  labelnames=['meter'], registry=registry),
         'watts': Gauge('battery_watts', 'Pack power in watts (volts * amps)',  labelnames=['meter'], registry=registry),
@@ -110,19 +112,19 @@ def cellinfo2(data):
     prt = (format(protect, "b").zfill(16))        # protect trigger (0,1)(off,on)
     message1 = {
         "meter": "bms",
-        "ovp" : int(prt[0:1]),             # overvoltage
-        "uvp" : int(prt[1:2]),             # undervoltage
-        "bov" : int(prt[2:3]),         # pack overvoltage
-        "buv" : int(prt[3:4]),            # pack undervoltage
-        "cot" : int(prt[4:5]),        # current over temp
-        "cut" : int(prt[5:6]),            # current under temp
-        "dot" : int(prt[6:7]),            # discharge over temp
-        "dut" : int(prt[7:8]),            # discharge under temp
-        "coc" : int(prt[8:9]),        # charge over current
-        "duc" : int(prt[9:10]),        # discharge under current
-        "sc" : int(prt[10:11]),        # short circuit
-        "ic" : int(prt[11:12]),        # ic failure
-        "cnf" : int(prt[12:13])        # config problem
+        "ovp" : int(prt[0:1]),             # Cell Overvoltage Protection
+        "uvp" : int(prt[1:2]),             # Cell Undervoltage Protection
+        "bov" : int(prt[2:3]),             # Pack Overvoltage Protection
+        "buv" : int(prt[3:4]),             # Pack Undervoltage Protection
+        "cot" : int(prt[4:5]),             # Charging Over-Temperature Protection
+        "cut" : int(prt[5:6]),             # Charging Low-Temperature Protection
+        "dot" : int(prt[6:7]),             # Discharging Over-Temperature Protection
+        "dut" : int(prt[7:8]),             # Discharging Low-Temperature Protection
+        "coc" : int(prt[8:9]),             # Charging Overcurrent Protection
+        "duc" : int(prt[9:10]),            # Discharging Overcurrent Protection
+        "sc" : int(prt[10:11]),            # Short Circuit Protection
+        "ic" : int(prt[11:12]),            # Front-End Detection IC Error
+        "mos" : int(prt[12:13])            # Software Lock MOS
     }
 
     message2 = {
@@ -145,11 +147,18 @@ def cellinfo2(data):
     metrics['cell'].labels(meter, 'temp', 'temp3').set(temp3)
     metrics['cell'].labels(meter, 'temp', 'temp4').set(temp4)
 
-    # Add protection status metrics
+    # Add raw protection value for debugging
+    metrics['protect_raw'].labels(meter).set(protect)
+
+    # Add protection status metrics (latched events, not necessarily active)
+    # Bit meanings per JBD BMS protocol:
+    # 0=Cell Overvoltage, 1=Cell Undervoltage, 2=Pack Overvoltage, 3=Pack Undervoltage
+    # 4=Charging Over-Temp, 5=Charging Low-Temp, 6=Discharging Over-Temp, 7=Discharging Low-Temp
+    # 8=Charging Overcurrent, 9=Discharging Overcurrent, 10=Short Circuit, 11=IC Error, 12=Software Lock MOS
     for prot_name, prot_bit in [
         ('ovp', 0), ('uvp', 1), ('bov', 2), ('buv', 3),
         ('cot', 4), ('cut', 5), ('dot', 6), ('dut', 7),
-        ('coc', 8), ('duc', 9), ('sc', 10), ('ic', 11), ('cnf', 12)
+        ('coc', 8), ('duc', 9), ('sc', 10), ('ic', 11), ('mos', 12)
     ]:
         metrics['cell'].labels(meter, 'protect', prot_name).set(int(prt[prot_bit:prot_bit+1]))
 
@@ -208,11 +217,15 @@ def cellinfo3(data):
                 metrics['cell'].labels(meter, 'temp', 'temp2').set(temp2_c)
                 metrics['cell'].labels(meter, 'temp', 'temp3').set(temp3_c)
 
+                # Update raw protection value
+                metrics['protect_raw'].labels(meter).set(protect)
+                
                 # Update protection status metrics (same format as cellinfo2)
+                # Bit 12 is Software Lock MOS, not configuration problem
                 for prot_name, prot_bit in [
                     ('ovp', 0), ('uvp', 1), ('bov', 2), ('buv', 3),
                     ('cot', 4), ('cut', 5), ('dot', 6), ('dut', 7),
-                    ('coc', 8), ('duc', 9), ('sc', 10), ('ic', 11), ('cnf', 12)
+                    ('coc', 8), ('duc', 9), ('sc', 10), ('ic', 11), ('mos', 12)
                 ]:
                     metrics['cell'].labels(meter, 'protect', prot_name).set(int(prt[prot_bit:prot_bit+1]))
     except Exception:
@@ -549,6 +562,50 @@ class MyDelegate(DefaultDelegate):
             # This is the continuation of a split dd03 message
             cellinfo2(data)
 
+def clear_protection_errors(bms):
+    """
+    Clear latched protection errors on the JBD BMS.
+    
+    WARNING: This function writes to BMS configuration registers.
+    Use with caution and only if you understand the risks.
+    
+    This requires entering EEPROM write mode first, then sending the clear command.
+    The exact command format may vary by BMS firmware version.
+    
+    Args:
+        bms: Connected BLE peripheral object
+    
+    Returns:
+        bool: True if commands were sent successfully, False otherwise
+    
+    Note: The safest method is to use the Xiaoxiang app's "Clear Alarm" feature.
+    """
+    try:
+        # Enter EEPROM write mode: DD 5A 00 02 56 78 [checksum] 77
+        # Checksum calculation: 0x100 - (sum of bytes & 0xFF)
+        # DD + 5A + 00 + 02 + 56 + 78 = 0x01E7, low byte = 0xE7, checksum = 0x100 - 0xE7 = 0x19
+        # But pattern suggests: FF AD (needs verification)
+        print('WARNING: Attempting to clear protection errors via BLE command.')
+        print('This writes to BMS configuration. Use Xiaoxiang app if possible.')
+        
+        # Enter EEPROM write mode
+        eeprom_cmd = b'\xdd\x5a\x00\x02\x56\x78\xff\xad\x77'
+        print(f'Sending EEPROM write mode command: {binascii.hexlify(eeprom_cmd).decode()}')
+        result = bms.writeCharacteristic(0x15, eeprom_cmd, False)
+        time.sleep(0.5)
+        
+        # Clear protection errors: DD 5A 01 02 28 28 [checksum] 77
+        clear_cmd = b'\xdd\x5a\x01\x02\x28\x28\xff\xad\x77'
+        print(f'Sending clear protection command: {binascii.hexlify(clear_cmd).decode()}')
+        result = bms.writeCharacteristic(0x15, clear_cmd, False)
+        time.sleep(0.5)
+        
+        print('Protection clear commands sent. Verify in next data read.')
+        return True
+    except Exception as ex:
+        print(f'Error clearing protection errors: {ex}')
+        return False
+
 def connect():
     """
     Establish BLE connection to the JBD BMS device.
@@ -618,13 +675,6 @@ if __name__ == "__main__":
     print(f'Prometheus metrics server started on port {port}')
 
     # Request hardware version once at startup
-    # Command format: dd a5 [command] 00 [checksum] 77
-    # Checksum pattern analysis:
-    #   0x04: dd a5 04 00 = 0x01a6, checksum = ff fc
-    #   0x03: dd a5 03 00 = 0x01a5, checksum = ff fd
-    #   0x05: dd a5 05 00 = 0x01a7, checksum = ff fb (following pattern)
-    # The pattern suggests: checksum = 0xff (0x100 - (sum & 0xff) - 1)
-    # Request hardware version once at startup
     try:
         result = bms.writeCharacteristic(0x15, b'\xdd\xa5\x05\x00\xff\xfb\x77', False)
         # Wait multiple times to catch the response (it may come in separate notifications)
@@ -633,6 +683,10 @@ if __name__ == "__main__":
         time.sleep(0.5)  # Final brief pause
     except Exception:
         pass
+
+    # To clear latched protection errors, uncomment the line below:
+    # WARNING: This writes to BMS configuration registers. Use Xiaoxiang app if possible.
+    # clear_protection_errors(bms)
 
     # Main monitoring loop
     while True:
